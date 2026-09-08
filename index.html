@@ -56,6 +56,8 @@
   .wpitem{display:flex;align-items:center;gap:5px;font-size:11px;background:#0f1117;border:1px solid var(--line);border-radius:7px;padding:4px 7px}
   .wpitem .lab{flex:1;font-variant-numeric:tabular-nums}
   .wpitem.repl{outline:2px solid var(--accent)}
+  .wpitem.atkitem{outline:1px solid var(--warn)}
+  .wpitem.atkitem .lab{color:var(--warn)}
   .conf{margin-top:8px;background:#2a1414;border:1px solid #7a3b3b;border-radius:8px;padding:7px 9px;font-size:11px;color:#ffc4c4;line-height:1.5}
   .conf b{color:#ff8a8a}.conf .jump{cursor:pointer;text-decoration:underline;color:#ffd0d0}
   .rsteps{margin-top:6px;font-size:11px;color:var(--muted);line-height:1.45;max-height:78px;overflow:auto;font-variant-numeric:tabular-nums}
@@ -119,10 +121,12 @@
           <button class="btn" id="wp">経由地を追加</button>
           <button class="btn" id="undo" style="display:none">1手戻す</button>
           <button class="btn" id="atk">攻撃 +60p</button>
+          <button class="btn" id="atkAdd">攻撃地点を追加</button>
           <button class="btn" id="rclear">ルート消去</button>
           
         </div>
         <div class="wplist" id="wplist"></div>
+        <div class="wplist" id="atklist"></div>
         <div class="rsteps" id="rsteps"></div>
       </div>
       <div id="confbox"></div>
@@ -141,7 +145,7 @@
   >
   <span>秒</span>
 </div>
-        <span class="hint">配置→ユーザーをタップ→移動先タップ。<b>点をドラッグで微調整</b>、<b>本体ドラッグでルートごと移動</b>。スライダーで時間再生。</span>
+        <span class="hint">配置→ユーザーをタップ→移動先タップ。<b>点をドラッグで微調整</b>、<b>本体ドラッグでルートごと移動</b>。スライダーで時間再生。<b>攻撃地点を追加</b>＝拠点・根拠地（黒地に数字のマス）をタップして攻撃対象に。ルート上の最も近い地点から寄り道して攻撃し、そこへ戻ってから残りのルートを進みます（往復分の移動時間がかかります）。</span>
       </div>
     </div>
   </div>
@@ -158,7 +162,8 @@ const DATA = {"meta":{"proj":"iso45"},"terrain":{"land":[[0,0],[0,1],[0,2],[0,3]
 const FILL={land:'#fefefe',water:'#aae0f9',honjin_area:'#f9d4e5',shallow:'#bbbdbf',village:'#00a550'};
 const LANDABLE=new Set(['land','shallow','honjin_area','village']);
 const ROLE={'先陣':{range:8,color:'#e0524d',short:'先'},'芝見':{range:6,color:'#4a82d6',short:'芝'},'補給':{range:6,color:'#2fa869',short:'補'}};
-const MOVE_COST=30,ATK_COST=60,REGEN=3,SEC_PER_CELL=0.5,AP_MAX=100;
+const MOVE_COST=30,ATK_COST=60,REGEN=3,AP_MAX=100;
+let SEC_PER_CELL=0.5;
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d'),stage=document.getElementById('stage'),$=id=>document.getElementById(id);
 let DPR=Math.min(window.devicePixelRatio||1,2);
 const key=(x,y)=>x+','+y, cheb=(a,b)=>Math.max(Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1])), ceq=(a,b)=>a[0]===b[0]&&a[1]===b[1];
@@ -179,6 +184,7 @@ for(const[x,y]of light){const px=x+y,py=x-y;if(px<pminx)pminx=px;if(px>pmaxx)pma
 
 let units=[],selId=null,placeRole=null,uidc=0,counts={'先陣':0,'芝見':0,'補給':0};
 let wpMode=false,replaceIdx=-1,showAll=true,showNum=true;
+let atkAddMode=false;
 let Tt=0,maxT=0,playing=false,lastFrame=0,conflicts=[],conflictCells=new Set();
 const unitAt=new Map();
 function reindex(){unitAt.clear();for(const u of units)unitAt.set(key(u.x,u.y),u);}
@@ -211,23 +217,49 @@ function route(start,goal,R){if(ceq(start,goal))return[start.slice()];const dist
   return path;}
 function manualNext(from,target,R){let best=null,bd=1e18,bf=-1;for(let dx=-R;dx<=R;dx++)for(let dy=-R;dy<=R;dy++){if(!dx&&!dy)continue;const nx=from[0]+dx,ny=from[1]+dy;if(!lfn(nx,ny))continue;const ex=nx-target[0],ey=ny-target[1],dt=ex*ex+ey*ey,df=Math.max(Math.abs(dx),Math.abs(dy));if(dt<bd-1e-9||(Math.abs(dt-bd)<=1e-9&&df>bf)){bd=dt;bf=df;best=[nx,ny];}}return best;}
 function computeUser(u){
-  u.stops=[[u.x,u.y]];u.meta=[{kind:'start'}];u.sim=null;u.err=null;
+  u.stops=[[u.x,u.y]];u.meta=[{kind:'start'}];u.sim=null;u.err=null;u.atkResolved=[];
   const R=ROLE[u.role].range;
   if(u.manual){const stops=[[u.x,u.y]],meta=[{kind:'start'}];
     for(let i=0;i<u.path.length;i++){const prev=stops[stops.length-1],c=u.path[i];if(cheb(prev,c)>R||!lfn(c[0],c[1]))u.err=1;stops.push([c[0],c[1]]);meta.push({kind:'mmove',idx:i});}
-    u.stops=stops;u.meta=meta;if(stops.length>1)u.sim=apSim(stops,u.attackEnd);u.timeline=tl(u);return;}
+    u.stops=stops;u.meta=meta;if(stops.length>1)u.sim=apSim(stops,[],u.attackEnd);u.timeline=tl(u);return;}
   if(!u.dest){u.timeline=tl(u);return;}
-  const ctrl=[[u.x,u.y],...u.wps,u.dest],stops=[ctrl[0]],meta=[{kind:'start'}];
-  for(let i=1;i<ctrl.length;i++){const seg=route(stops[stops.length-1],ctrl[i],R);if(!seg){u.err=1;u.stops=[[u.x,u.y]];u.meta=[{kind:'start'}];u.timeline=tl(u);return;}
-    for(let j=1;j<seg.length;j++){stops.push(seg[j]);meta.push(j===seg.length-1?{kind:i===ctrl.length-1?'dest':'wp',wpIndex:i-1}:{kind:'auto',seg:i-1});}}
-  u.stops=stops;u.meta=meta;u.sim=apSim(stops,u.attackEnd);u.timeline=tl(u);
+  const ctrl=[...u.wps,u.dest],stops=[[u.x,u.y]],meta=[{kind:'start'}];
+  for(let idx=0;idx<ctrl.length;idx++){
+    const isLast=idx===ctrl.length-1,entry=ctrl[idx];
+    const seg=route(stops[stops.length-1],entry,R);
+    if(!seg){u.err=1;u.stops=[[u.x,u.y]];u.meta=[{kind:'start'}];u.timeline=tl(u);return;}
+    for(let j=1;j<seg.length;j++){stops.push(seg[j]);meta.push(j===seg.length-1?(isLast?{kind:'dest'}:{kind:'wp',wpIndex:idx}):{kind:'auto',seg:idx});}
+  }
+  // 各攻撃地点をルート上の最も近い地点に紐づける（そこから往復して攻撃し、続きを進む）
+  const atkEvents=[];
+  (u.atks||[]).forEach((tgt,srcIdx)=>{
+    let bestI=-1,bestD=Infinity;
+    for(let i=0;i<stops.length;i++){const d=cheb(stops[i],tgt);if(d<bestD){bestD=d;bestI=i;}}
+    if(bestI>=0&&bestD<=R){atkEvents.push({afterIndex:bestI,target:tgt});u.atkResolved[srcIdx]={ok:true,anchor:stops[bestI]};}
+    else{u.atkResolved[srcIdx]={ok:false};}
+  });
+  u.stops=stops;u.meta=meta;u.atkEvents=atkEvents;u.sim=apSim(stops,atkEvents,u.attackEnd);u.timeline=tl(u);
 }
-function apSim(stops,atk){let AP=APSTART(),t=0;const log=[];
-  for(let i=1;i<stops.length;i++){const d=cheb(stops[i-1],stops[i]);let w=0;if(AP<MOVE_COST){w=(MOVE_COST-AP)/REGEN;t+=w;AP=MOVE_COST;}AP-=MOVE_COST;const tm=SEC_PER_CELL*d;AP=Math.min(AP_MAX,AP+REGEN*tm);t+=tm;log.push({type:'move',i,from:stops[i-1],to:stops[i],d,wait:w,tm,AP});}
-  if(atk){let w=0;if(AP<ATK_COST){w=(ATK_COST-AP)/REGEN;t+=w;AP=ATK_COST;}AP-=ATK_COST;log.push({type:'atk',wait:w,AP});}
-  let cells=0;for(let i=1;i<stops.length;i++)cells+=cheb(stops[i-1],stops[i]);return{AP,t,log,moves:stops.length-1,cells};}
-function tl(u){const moves=[],rests=[];let rs=0;const R=ROLE[u.role].range;
-  if(u.sim){for(const l of u.sim.log){if(l.type==='move'){const ms=rs+l.wait,me=ms+l.tm;rests.push({cell:l.from,t0:rs,t1:ms});const dx=l.to[0]-l.from[0],dy=l.to[1]-l.from[1],ad=Math.max(Math.abs(dx),Math.abs(dy)),st8=(dx===0||dy===0||Math.abs(dx)===Math.abs(dy));moves.push({from:l.from,to:l.to,t0:ms,t1:me,bend:!(st8&&ad===R)});rs=me;}}}
+function apSim(stops,atkEvents,atkEnd){
+  let AP=APSTART(),t=0,cells=0;const log=[];
+  const evMap=new Map();
+  for(const e of (atkEvents||[])){if(!evMap.has(e.afterIndex))evMap.set(e.afterIndex,[]);evMap.get(e.afterIndex).push(e.target);}
+  function doMove(from,to,isAtk,noWait){const d=cheb(from,to);let w=0;if(!noWait&&AP<MOVE_COST){w=(MOVE_COST-AP)/REGEN;t+=w;AP=MOVE_COST;}AP-=MOVE_COST;const tm=SEC_PER_CELL*d;AP=Math.min(AP_MAX,AP+REGEN*tm);t+=tm;log.push({type:'move',from,to,d,wait:w,tm,AP,atk:!!isAtk});cells+=d;}
+  function doAtk(){let w=0;if(AP<ATK_COST){w=(ATK_COST-AP)/REGEN;t+=w;AP=ATK_COST;}AP-=ATK_COST;log.push({type:'atk',wait:w,AP});}
+  // 攻撃後の帰路：攻撃地点でAP回復を待たず、即座に開始地点へ戻る（回復待ちは戻った後に発生）
+  if(evMap.has(0))for(const tgt of evMap.get(0)){doMove(stops[0],tgt,true);doAtk();doMove(tgt,stops[0],true,true);}
+  for(let i=1;i<stops.length;i++){
+    doMove(stops[i-1],stops[i],false);
+    if(evMap.has(i))for(const tgt of evMap.get(i)){doMove(stops[i],tgt,true);doAtk();doMove(tgt,stops[i],true,true);}
+  }
+  if(atkEnd)doAtk();
+  return{AP,t,log,moves:log.filter(l=>l.type==='move').length,cells};
+}
+function tl(u){const moves=[],rests=[];let rs=0;const R=ROLE[u.role].range;let curPos=u.stops[0];
+  if(u.sim){for(const l of u.sim.log){
+    if(l.type==='move'){const ms=rs+l.wait,me=ms+l.tm;rests.push({cell:l.from,t0:rs,t1:ms});const dx=l.to[0]-l.from[0],dy=l.to[1]-l.from[1],ad=Math.max(Math.abs(dx),Math.abs(dy)),st8=(dx===0||dy===0||Math.abs(dx)===Math.abs(dy));moves.push({from:l.from,to:l.to,t0:ms,t1:me,bend:l.atk?false:!(st8&&ad===R),atk:!!l.atk});rs=me;curPos=l.to;}
+    else if(l.type==='atk'){const ms=rs+l.wait;rests.push({cell:curPos,t0:rs,t1:ms});rs=ms;}
+  }}
   rests.push({cell:u.stops[u.stops.length-1],t0:rs,t1:Infinity});return{moves,rests,total:u.sim?u.sim.t:0};}
 function posAt(u,t){const T=u.timeline;for(const m of T.moves)if(t>=m.t0&&t<m.t1){const f=(t-m.t0)/(m.t1-m.t0);return[m.from[0]+(m.to[0]-m.from[0])*f,m.from[1]+(m.to[1]-m.from[1])*f];}for(const r of T.rests)if(t>=r.t0&&t<r.t1)return r.cell;return T.rests[T.rests.length-1].cell;}
 function recomputeAll(changed){reindex();for(const u of (changed===undefined?units:changed))computeUser(u);
@@ -244,12 +276,14 @@ function dia(px,py,hs){ctx.beginPath();ctx.moveTo(px,py-hs);ctx.lineTo(px+hs,py)
 const S=(x,y)=>[(x+y)*scale+offX,(x-y)*scale+offY];
 function line(a,b){const[ax,ay]=S(a[0],a[1]),[bx,by]=S(b[0],b[1]);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();}
 function drawRoute(u,prom){const T=u.timeline,col=ROLE[u.role].color;if(!T.moves.length)return;
-  for(const m of T.moves){const full=Tt>=m.t1,inp=Tt>=m.t0&&Tt<m.t1;ctx.lineWidth=prom?3:2;ctx.setLineDash(m.bend?[5,4]:[]);ctx.strokeStyle=col;
+  for(const m of T.moves){const full=Tt>=m.t1,inp=Tt>=m.t0&&Tt<m.t1;ctx.lineWidth=prom?3:2;ctx.setLineDash(m.atk?[3,3]:(m.bend?[5,4]:[]));ctx.strokeStyle=m.atk?'#ff5d5d':col;
     if(full){ctx.globalAlpha=.26;line(m.from,m.to);}
     else if(inp){const f=(Tt-m.t0)/(m.t1-m.t0),mid=[m.from[0]+(m.to[0]-m.from[0])*f,m.from[1]+(m.to[1]-m.from[1])*f];ctx.globalAlpha=.26;line(m.from,mid);ctx.globalAlpha=prom?1:.65;line(mid,m.to);}
     else{ctx.globalAlpha=prom?1:.5;line(m.from,m.to);}}
   ctx.globalAlpha=1;ctx.setLineDash([]);
-  T.moves.forEach((m,i)=>{const[px,py]=S(m.to[0],m.to[1]);const last=i===T.moves.length-1;ctx.beginPath();ctx.arc(px,py,last?7:5.5,0,7);ctx.fillStyle=last?'#fff':col;ctx.fill();ctx.strokeStyle=col;ctx.lineWidth=2;ctx.stroke();
+  T.moves.forEach((m,i)=>{const last=i===T.moves.length-1;
+    if(m.atk&&!last){const nxt=T.moves[i+1];const isOutbound=nxt&&nxt.atk&&nxt.to[0]===m.from[0]&&nxt.to[1]===m.from[1]&&nxt.from[0]===m.to[0]&&nxt.from[1]===m.to[1];if(!isOutbound)return;const[px,py]=S(m.to[0],m.to[1]);ctx.beginPath();ctx.moveTo(px,py-7);ctx.lineTo(px+7,py);ctx.lineTo(px,py+7);ctx.lineTo(px-7,py);ctx.closePath();ctx.fillStyle='#ff5d5d';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();return;}
+    const[px,py]=S(m.to[0],m.to[1]);ctx.beginPath();ctx.arc(px,py,last?7:5.5,0,7);ctx.fillStyle=last?'#fff':col;ctx.fill();ctx.strokeStyle=col;ctx.lineWidth=2;ctx.stroke();
     ctx.fillStyle=last?col:'#fff';ctx.font='700 10px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(prom?(i+1):firstChar(u.name)||ROLE[u.role].short,px,py);});}
 function draw(){
   const W=cv.width,H=cv.height;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#0f1117';ctx.fillRect(0,0,W,H);ctx.scale(DPR,DPR);
@@ -286,20 +320,29 @@ function render(){
   const u=sel();$('usel').style.display=u?'':'none';
   if(u){$('udot').style.background=ROLE[u.role].color;if(document.activeElement!==$('uname'))$('uname').value=u.name||'';$('uname').placeholder=u.auto;$('upos').textContent=`${u.role}・(${u.x}, ${u.y})`;
     $('mode').textContent=u.manual?'ルート: 手動':'ルート: 自動';$('mode').classList.toggle('on',u.manual);$('wp').style.display=u.manual?'none':'';$('undo').style.display=u.manual?'':'none';$('wp').classList.toggle('on',wpMode);$('wp').textContent=wpMode?'経由地: 追加中':'経由地を追加';$('atk').classList.toggle('on',u.attackEnd);
+    $('atkAdd').style.display=u.manual?'none':'';$('atkAdd').classList.toggle('on',atkAddMode);$('atkAdd').textContent=atkAddMode?'攻撃地点: 選択中（マスをタップ）':'攻撃地点を追加';
     const sm=$('rsummary'),st=$('rsteps');
     if(u.err){sm.innerHTML='<span style="color:#f0a0a0">到達できません（着地できる中継マスがありません）</span>';st.innerHTML='';}
     else if(u.sim){const tt=u.sim.t,mm=Math.floor(tt/60),ss=tt%60,tstr=mm?`${mm}分${ss.toFixed(1)}秒`:`${tt.toFixed(1)}秒`;
-      sm.innerHTML=`手数 <b>${u.sim.moves}</b> ／ 総移動 <b>${u.sim.cells}</b>マス ／ 所要 <b>${tstr}</b><br>行動点 ${APSTART()} → <b>${u.sim.AP.toFixed(0)}</b>${u.snapped?' ／ <span style="color:#f0a0a0">目的地が着地不可→手前停止</span>':''}${u.attackEnd?' ／ 攻撃込み':''}`;
-      st.innerHTML=u.sim.log.map(l=>l.type==='move'?`${l.i}手目 → (${l.to[0]},${l.to[1]}) ${l.d}マス${l.bend?'<span style="color:#e0a">［要操作］</span>':''}${l.wait>0?` 待${l.wait.toFixed(1)}s`:''} ${l.tm.toFixed(1)}s AP${l.AP.toFixed(0)}`:`攻撃 −60p${l.wait>0?` 待${l.wait.toFixed(1)}s`:''} AP${l.AP.toFixed(0)}`).map(x=>`<div>${x}</div>`).join('');
+      const atkCount=u.sim.log.filter(l=>l.type==='atk').length;
+      const anyWarn=(u.atkResolved||[]).some(r=>r&&!r.ok);
+      sm.innerHTML=`手数 <b>${u.sim.moves}</b> ／ 総移動 <b>${u.sim.cells}</b>マス ／ 所要 <b>${tstr}</b><br>行動点 ${APSTART()} → <b>${u.sim.AP.toFixed(0)}</b>${u.snapped?' ／ <span style="color:#f0a0a0">目的地が着地不可→手前停止</span>':''}${atkCount?` ／ 攻撃 <b>${atkCount}</b>回`:''}${anyWarn?' ／ <span style="color:#f0a0a0">範囲外の攻撃地点があります</span>':''}`;
+      st.innerHTML=u.sim.log.map((l,idx)=>l.type==='move'?`${idx+1}手目 ${l.atk?'［攻撃移動］':''}→ (${l.to[0]},${l.to[1]}) ${l.d}マス${l.bend?'<span style="color:#e0a">［要操作］</span>':''}${l.wait>0?` 待${l.wait.toFixed(1)}s`:''} ${l.tm.toFixed(1)}s AP${l.AP.toFixed(0)}`:`攻撃 −60p${l.wait>0?` 待${l.wait.toFixed(1)}s`:''} AP${l.AP.toFixed(0)}`).map(x=>`<div>${x}</div>`).join('');
     }else{sm.innerHTML='移動先のマスをタップするとルート・行動点・時間を計算します（点はドラッグで微調整可）';st.innerHTML='';}
     const wl=$('wplist');wl.innerHTML='';
     u.wps.forEach((wp,i)=>{const d=document.createElement('div');d.className='wpitem'+(replaceIdx===i?' repl':'');d.innerHTML=`<span class="lab">経由地${i+1}：(${wp[0]}, ${wp[1]})</span>`;
       const mk=(t,fn)=>{const b=document.createElement('button');b.className='btn sm';b.textContent=t;b.onclick=fn;return b;};
       d.appendChild(mk('↑',()=>{if(i>0){[u.wps[i-1],u.wps[i]]=[u.wps[i],u.wps[i-1]];recomputeAll([u]);render();draw();}}));
       d.appendChild(mk('↓',()=>{if(i<u.wps.length-1){[u.wps[i+1],u.wps[i]]=[u.wps[i],u.wps[i+1]];recomputeAll([u]);render();draw();}}));
-      d.appendChild(mk('置換',()=>{replaceIdx=replaceIdx===i?-1:i;wpMode=false;render();}));
+      d.appendChild(mk('置換',()=>{replaceIdx=replaceIdx===i?-1:i;wpMode=false;atkAddMode=false;render();}));
       d.appendChild(mk('削除',()=>{u.wps.splice(i,1);replaceIdx=-1;recomputeAll([u]);render();draw();}));
       wl.appendChild(d);});
+    const al=$('atklist');al.innerHTML='';
+    (u.atks||[]).forEach((tgt,i)=>{const res=(u.atkResolved||[])[i];const ok=res&&res.ok;const d=document.createElement('div');d.className='wpitem atkitem';
+      d.innerHTML=`<span class="lab">攻撃地点${i+1}：(${tgt[0]}, ${tgt[1]})${ok?` ← (${res.anchor[0]},${res.anchor[1]})から往復`:' <span style="color:#f0a0a0">（範囲外）</span>'}</span>`;
+      const mk=(t,fn)=>{const b=document.createElement('button');b.className='btn sm';b.textContent=t;b.onclick=fn;return b;};
+      d.appendChild(mk('削除',()=>{u.atks.splice(i,1);recomputeAll([u]);render();draw();}));
+      al.appendChild(d);});
   }
   const cb=$('confbox');
   if(conflicts.length){const items=conflicts.slice(0,10).map(c=>{const tw=c.t1===Infinity?`${c.t0.toFixed(1)}s〜`:`${c.t0.toFixed(1)}〜${c.t1.toFixed(1)}s`;return `<div><span class="jump" data-x="${c.x}" data-y="${c.y}">▸(${c.x}, ${c.y})</span>：${nm(c.a)} と ${nm(c.b)}（${tw}）</div>`;}).join('');
@@ -310,26 +353,40 @@ function render(){
 function nm(u){return `<span style="color:${ROLE[u.role].color}">${u.name||u.auto}</span>`;}
 function centerOn(x,y){if(scale<9)scale=9;offX=cv.clientWidth/2-(x+y)*scale;offY=cv.clientHeight/2-(x-y)*scale;draw();}
 
-document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{placeRole=placeRole===c.dataset.role?null:c.dataset.role;selId=null;wpMode=false;replaceIdx=-1;render();draw();});
+document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{placeRole=placeRole===c.dataset.role?null:c.dataset.role;selId=null;wpMode=false;atkAddMode=false;replaceIdx=-1;render();draw();});
 $('uname').oninput=function(){const u=sel();if(u){u.name=this.value.trim();draw();}};
 $('del').onclick=()=>{units=units.filter(z=>z.id!==selId);selId=null;recomputeAll([]);render();draw();};
 $('clear').onclick=()=>{if(units.length&&confirm('すべてのユーザーを消去しますか？')){units=[];selId=null;counts={'先陣':0,'芝見':0,'補給':0};Tt=0;$('slider').value=0;updTime();recomputeAll();render();draw();}};
-$('wp').onclick=()=>{wpMode=!wpMode;replaceIdx=-1;render();};
-$('mode').onclick=()=>{const u=sel();if(!u)return;if(!u.manual){u.manual=true;u.path=(u.stops&&u.stops.length>1)?u.stops.slice(1).map(c=>[c[0],c[1]]):[];u.dest=null;u.wps=[];u.snapped=false;}else{u.manual=false;u.dest=(u.path&&u.path.length)?u.path[u.path.length-1].slice():null;u.path=[];u.wps=[];}wpMode=false;replaceIdx=-1;resetT();recomputeAll([u]);render();draw();};
+$('wp').onclick=()=>{wpMode=!wpMode;atkAddMode=false;replaceIdx=-1;render();};
+$('mode').onclick=()=>{const u=sel();if(!u)return;if(!u.manual){u.manual=true;u.path=(u.stops&&u.stops.length>1)?u.stops.slice(1).map(c=>[c[0],c[1]]):[];u.dest=null;u.wps=[];u.snapped=false;}else{u.manual=false;u.dest=(u.path&&u.path.length)?u.path[u.path.length-1].slice():null;u.path=[];u.wps=[];}wpMode=false;atkAddMode=false;replaceIdx=-1;resetT();recomputeAll([u]);render();draw();};
 $('undo').onclick=()=>{const u=sel();if(u&&u.manual&&u.path&&u.path.length){u.path.pop();resetT();recomputeAll([u]);render();draw();}};
 $('atk').onclick=()=>{const u=sel();if(u){u.attackEnd=!u.attackEnd;recomputeAll([u]);render();draw();}};
-$('rclear').onclick=()=>{const u=sel();if(u){u.dest=null;u.wps=[];u.attackEnd=false;u.snapped=false;wpMode=false;replaceIdx=-1;recomputeAll([u]);render();draw();}};
+$('atkAdd').onclick=()=>{atkAddMode=!atkAddMode;wpMode=false;replaceIdx=-1;render();};
+$('rclear').onclick=()=>{const u=sel();if(u){u.dest=null;u.wps=[];u.atks=[];u.attackEnd=false;u.snapped=false;wpMode=false;atkAddMode=false;replaceIdx=-1;recomputeAll([u]);render();draw();}};
+$('moveTime').value=SEC_PER_CELL;
+$('moveTime').addEventListener('input',function(){
+  const v=parseFloat(this.value);
+  if(Number.isFinite(v)&&v>0){SEC_PER_CELL=v;resetT();recomputeAll();render();draw();}
+});
 
 
 function resetT(){Tt=0;$('slider').value=0;updTime();}
 function tapCell(x,y){
-  if(placeRole){if(!landableSel(x,y)){flash('ここには配置できません（着地不可）');return;}counts[placeRole]++;const nu={id:++uidc,x,y,role:placeRole,name:'',auto:placeRole+counts[placeRole],wps:[],dest:null,attackEnd:false,snapped:false,manual:false,path:[]};units.push(nu);recomputeAll([nu]);render();draw();return;}
-  const hit=unitAt.get(key(x,y));if(hit&&hit.id!==selId){selId=hit.id;wpMode=false;replaceIdx=-1;render();draw();return;}
+  if(placeRole){if(!landableSel(x,y)){flash('ここには配置できません（着地不可）');return;}counts[placeRole]++;const nu={id:++uidc,x,y,role:placeRole,name:'',auto:placeRole+counts[placeRole],wps:[],dest:null,atks:[],attackEnd:false,snapped:false,manual:false,path:[]};units.push(nu);recomputeAll([nu]);render();draw();return;}
+  const hit=unitAt.get(key(x,y));if(hit&&hit.id!==selId){selId=hit.id;wpMode=false;atkAddMode=false;replaceIdx=-1;render();draw();return;}
   const u=sel();if(!u)return;
   if(u.manual){const R=ROLE[u.role].range,last=u.stops[u.stops.length-1],c=manualNext(last,[x,y],R);if(!c){flash('近くに着地できるマスがありません');return;}u.path.push(c);resetT();recomputeAll([u]);render();draw();return;}
+  if(atkAddMode){
+    if(!pointByCell.has(key(x,y))){flash('攻撃地点は拠点・根拠地（黒地に数字のマス）のみ選択できます');return;}
+    (u.atks=u.atks||[]).push([x,y]);atkAddMode=false;resetT();recomputeAll([u]);render();draw();return;
+  }
+  if(replaceIdx>=0){
+    const sn=snap(x,y);if(!sn){flash('近くに着地できるマスがありません');return;}
+    u.wps[replaceIdx]=sn.cell;
+    replaceIdx=-1;resetT();recomputeAll([u]);render();draw();return;
+  }
   const sn=snap(x,y);if(!sn){flash('近くに着地できるマスがありません');return;}
-  if(replaceIdx>=0){u.wps[replaceIdx]=sn.cell;replaceIdx=-1;}
-  else if(wpMode){u.wps.push(sn.cell);}
+  if(wpMode){u.wps.push(sn.cell);}
   else if(!u.dest){u.dest=sn.cell;u.snapped=sn.snapped;} // 初回のみタップで設定
   else return; // 目的地あり＋空マスタップ → 無視（移動はドラッグで）
   resetT();recomputeAll([u]);render();draw();
@@ -366,7 +423,7 @@ function endPtr(e){const wasDrag=dragId===e.pointerId,r=cv.getBoundingClientRect
   if(pointers.size===1){const id=[...pointers.keys()][0];dragId=id;const p=pointers.get(id);lastX=p[0];lastY=p[1];}}
 cv.addEventListener('pointerup',endPtr);cv.addEventListener('pointercancel',endPtr);
 function applyGrab(g,cell){const u=g.u;const sn=snap(cell[0],cell[1]);if(!sn){render();draw();return;}const C=sn.cell;
-  if(g.kind==='user'){const dx=C[0]-u.x,dy=C[1]-u.y;u.x=C[0];u.y=C[1];u.wps=u.wps.map(w=>{const s2=snap(w[0]+dx,w[1]+dy);return s2?s2.cell:w;});u.path=(u.path||[]).map(w=>{const s2=snap(w[0]+dx,w[1]+dy);return s2?s2.cell:w;});if(u.dest){const s2=snap(u.dest[0]+dx,u.dest[1]+dy);if(s2){u.dest=s2.cell;u.snapped=s2.snapped;}}}
+  if(g.kind==='user'){const dx=C[0]-u.x,dy=C[1]-u.y;u.x=C[0];u.y=C[1];u.wps=u.wps.map(w=>{const s2=snap(w[0]+dx,w[1]+dy);return s2?s2.cell:w;});u.path=(u.path||[]).map(w=>{const s2=snap(w[0]+dx,w[1]+dy);return s2?s2.cell:w;});if(u.dest){const s2=snap(u.dest[0]+dx,u.dest[1]+dy);if(s2){u.dest=s2.cell;u.snapped=s2.snapped;}}if(u.atks)u.atks=u.atks.map(a=>[a[0]+dx,a[1]+dy]);}
   else if(g.kind==='stop'){const m=u.meta[g.j];if(!m){return;}if(m.kind==='dest'){u.dest=C;u.snapped=sn.snapped;}else if(m.kind==='wp'){u.wps[m.wpIndex]=C;}else if(m.kind==='auto'){u.wps.splice(m.seg,0,C);}else if(m.kind==='mmove'){u.path[m.idx]=C;}}
   resetT();recomputeAll([u]);render();draw();}
 cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientRect();zoomAt(e.clientX-r.left,e.clientY-r.top,e.deltaY<0?1.12:1/1.12);},{passive:false});
@@ -389,8 +446,8 @@ try{const ro=new ResizeObserver(()=>{document.documentElement.style.setProperty(
 
 // ---- CSV save / load ----
 function csvCell(v){v=String(v);return /[",;\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
-function exportCSV(){const rows=[['name','role','x','y','attack','dest_x','dest_y','waypoints','mode']];
-  for(const u of units){const list=u.manual?(u.path||[]):u.wps;const wp=list.map(w=>w[0]+' '+w[1]).join(';');rows.push([u.name||'',u.role,u.x,u.y,u.attackEnd?1:0,u.manual?'':(u.dest?u.dest[0]:''),u.manual?'':(u.dest?u.dest[1]:''),wp,u.manual?'manual':'']);}
+function exportCSV(){const rows=[['name','role','x','y','attack','dest_x','dest_y','waypoints','mode','atks']];
+  for(const u of units){const list=u.manual?(u.path||[]):u.wps;const wp=list.map(w=>w[0]+' '+w[1]).join(';');const ak=(!u.manual&&u.atks&&u.atks.length)?u.atks.map(a=>a[0]+' '+a[1]).join(';'):'';rows.push([u.name||'',u.role,u.x,u.y,u.attackEnd?1:0,u.manual?'':(u.dest?u.dest[0]:''),u.manual?'':(u.dest?u.dest[1]:''),wp,u.manual?'manual':'',ak]);}
   return rows.map(r=>r.map(csvCell).join(',')).join('\n');}
 function parseLine(line){const out=[];let cur='',q=false;for(let i=0;i<line.length;i++){const ch=line[i];if(q){if(ch=='"'){if(line[i+1]=='"'){cur+='"';i++;}else q=false;}else cur+=ch;}else{if(ch=='"')q=true;else if(ch==','){out.push(cur);cur='';}else cur+=ch;}}out.push(cur);return out;}
 function applyCSV(text){
@@ -399,17 +456,24 @@ function applyCSV(text){
   let h=parseLine(lines[0]).map(s=>s.trim().toLowerCase());const hasH=h.includes('role');let start=hasH?1:0;
   const ix=n=>h.indexOf(n);const nu=[];let uc=0;const cnt={'先陣':0,'芝見':0,'補給':0};
   for(let i=start;i<lines.length;i++){const c=parseLine(lines[i]);if(c.length<4)continue;
-    let name,role,x,y,atk,dx,dy,wp;
+    let name,role,x,y,atk,dx,dy,wp,atksRaw='',destAtkRaw='';
     let mode='';
-    if(hasH){name=c[ix('name')]||'';role=(c[ix('role')]||'').trim();x=+c[ix('x')];y=+c[ix('y')];atk=c[ix('attack')];dx=c[ix('dest_x')];dy=c[ix('dest_y')];wp=c[ix('waypoints')]||'';mode=(ix('mode')>=0?c[ix('mode')]:'')||'';}
+    if(hasH){name=c[ix('name')]||'';role=(c[ix('role')]||'').trim();x=+c[ix('x')];y=+c[ix('y')];atk=c[ix('attack')];dx=c[ix('dest_x')];dy=c[ix('dest_y')];wp=c[ix('waypoints')]||'';mode=(ix('mode')>=0?c[ix('mode')]:'')||'';atksRaw=(ix('atks')>=0?c[ix('atks')]:'')||'';destAtkRaw=(ix('dest_atk')>=0?c[ix('dest_atk')]:'')||'';}
     else{name=c[0]||'';role=(c[1]||'').trim();x=+c[2];y=+c[3];atk=c[4];dx=c[5];dy=c[6];wp=c[7]||'';mode=c[8]||'';}
     if(!ROLE[role]||!Number.isFinite(x)||!Number.isFinite(y))continue;
     cnt[role]=(cnt[role]||0)+1;
-    const pts=(wp||'').split(';').map(s=>s.trim()).filter(Boolean).map(s=>s.split(/\s+/).map(Number)).filter(p=>p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1]));
+    const atksFromWp=[];
+    const pts=(wp||'').split(';').map(s=>s.trim()).filter(Boolean).map(s=>{
+      if(s.startsWith('A:')){const nums=s.slice(2).trim().split(/\s+/).map(Number);if(nums.length===2&&nums.every(Number.isFinite))atksFromWp.push(nums);return null;}
+      const arr=s.split(/\s+/).map(Number);return(arr.length===2&&arr.every(Number.isFinite))?arr:null;
+    }).filter(Boolean);
     const isMan=(''+mode).trim().toLowerCase()==='manual';
     const wps=isMan?[]:pts,path=isMan?pts:[];
     const dest=(!isMan&&dx!=null&&dx!==''&&dy!=null&&dy!==''&&Number.isFinite(+dx)&&Number.isFinite(+dy))?[+dx,+dy]:null;
-    nu.push({id:++uc,x,y,role,name:name||'',auto:role+cnt[role],wps,dest,attackEnd:(''+atk).trim()=='1'||(''+atk).trim().toLowerCase()=='true',snapped:false,manual:isMan,path});}
+    const atks=isMan?[]:atksFromWp.slice();
+    (atksRaw||'').split(';').map(s=>s.trim()).filter(Boolean).forEach(s=>{const a=s.split(/\s+/).map(Number);if(a.length===2&&a.every(Number.isFinite))atks.push(a);});
+    if(!isMan&&destAtkRaw&&destAtkRaw.trim()){const da=destAtkRaw.trim().split(/\s+/).map(Number);if(da.length===2&&da.every(Number.isFinite))atks.push(da);}
+    nu.push({id:++uc,x,y,role,name:name||'',auto:role+cnt[role],wps,dest,atks,attackEnd:(''+atk).trim()=='1'||(''+atk).trim().toLowerCase()=='true',snapped:false,manual:isMan,path});}
   if(!nu.length){alert('読み込めるユーザーがありませんでした（役職・座標を確認してください）');return;}
   units=nu;uidc=uc;counts=cnt;selId=null;Tt=0;$('slider').value=0;updTime();recomputeAll();render();draw();closeIO();
 }
