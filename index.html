@@ -110,6 +110,15 @@
   #vbar button{border:0;border-radius:16px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;background:var(--accent);color:#1a1300;touch-action:manipulation;flex:none}
   #vbar button.all{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
   body.pleft #vbar{left:calc((100% + var(--pw) + 16px) / 2)}
+  /* スマホ：詳細パネルを下にしまう */
+  #pcol{display:none;width:100%;border:0;background:transparent;color:var(--muted);font-size:12px;padding:0 0 6px;cursor:pointer;touch-action:manipulation;text-align:center}
+  #pcol::before{content:'';display:block;width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 5px}
+  @media(max-width:760px){
+    body:not(.pleft) #pcol{display:block}
+    body:not(.pleft) .panel.collapsed{padding:6px 11px 4px;overflow:hidden}
+    body:not(.pleft) .panel.collapsed>*:not(#pcol){display:none!important}
+    body:not(.pleft) .panel.collapsed #pcol{padding-bottom:2px;color:var(--ink)}
+  }
   :root{--pw:370px}
   body.pleft .panel{left:8px;right:auto;top:8px;bottom:8px;width:var(--pw);max-height:none}
   body.pleft .timebar{left:calc(var(--pw) + 16px);bottom:8px}
@@ -124,7 +133,7 @@
 </head>
 <body>
 <div id="app">
-  <header><h1>手取川 <span>布陣マップ</span></h1><div class="sub" id="hsub">v18 ・ Escで編集終了・操作パネル左配置（幅変更可）・担当拠点への矢印・1手削除・元に戻す</div></header>
+  <header><h1>手取川 <span>布陣マップ</span></h1><div class="sub" id="hsub">v19 ・ スマホで詳細をしまえる・Escで編集終了・操作パネル左配置（幅変更可）・担当拠点への矢印・1手削除・元に戻す</div></header>
   <div id="stage">
     <canvas id="cv"></canvas>
     <div class="toolbar">
@@ -157,6 +166,7 @@
     <div id="vbar"><span class="vd" id="vbdot"></span><span class="vn" id="vbname"></span><button id="vbonly">このコマだけ表示</button><button id="vball" class="all">全員表示</button></div>
     <div id="presize" title="ドラッグでパネルの幅を変更（ダブルクリックで元の幅）"></div>
     <div class="panel" id="panel">
+      <button id="pcol" type="button">▼ 詳細をしまう</button>
       <div class="ttl"><span id="ptitle">ユーザーを追加（役職をタップ → マスをタップ）</span><span class="coord" id="rcoord">( – , – )</span></div>
       <div class="chips">
         <div class="chip" data-role="先陣">先陣<small>移動8</small></div>
@@ -427,7 +437,7 @@ function render(){
       d.appendChild(mk('削除',()=>{u.wps.splice(i,1);replaceIdx=-1;recomputeAll([u]);render();draw();}));
       wl.appendChild(d);});
   }
-  renderMrow();renderFocus();renderVbar();
+  renderMrow();renderFocus();renderVbar();renderPcol();
   const dl=VIEW?[]:dupLabels(),db=$('dupbox');
   db.innerHTML=dl.length?`<div class="conf" style="background:#2a2110;border-color:#7a5a2b;color:#ffe2b0">⚠ コマの表示名（先頭2文字）が重複しています <b>${dl.length}件</b><br>${dl.map(([k,a])=>`<div>「<b style="color:#ffcf70">${esc(k)}</b>」：${a.map(esc).join(' ／ ')}</div>`).join('')}<div style="color:#c9b48a">名簿で名前を変えると区別できます（例：先頭を変える）</div></div>`:'';
   const cb=$('confbox');const CF=focusId?conflicts.filter(c=>c.a.id===focusId||c.b.id===focusId):conflicts;
@@ -467,6 +477,9 @@ $('urole').onchange=function(){const u=sel();if(!u)return;u.role=this.value;cons
 $('tgt').onclick=()=>{const u=sel();if(!u)return;arrowMode=!arrowMode;wpMode=false;replaceIdx=-1;render();};
 $('tgtdel').onclick=()=>{const u=sel();if(!u)return;u.target=null;arrowMode=false;render();draw();};
 $('tarw').onclick=function(){showArrows=!showArrows;this.classList.toggle('on',showArrows);draw();};
+function renderPcol(){const P=$('panel'),c=P.classList.contains('collapsed'),u=sel()||(focusId?units.find(z=>z.id===focusId):null);
+  $('pcol').textContent=c?`▲ ${VIEW?'詳細':'操作パネル'}を開く${u?`（${uname(u)}）`:''}`:`▼ ${VIEW?'詳細':'操作パネル'}をしまう`;}
+$('pcol').onclick=()=>{$('panel').classList.toggle('collapsed');renderPcol();};
 function renderVbar(){const vb=$('vbar');if(!VIEW){vb.classList.remove('show');return;}
   const u=sel(),f=focusId?units.find(z=>z.id===focusId):null,t=f||u;
   if(!t){vb.classList.remove('show');return;}
@@ -771,6 +784,7 @@ function persist(){if(restoring)return;if(VIEW){try{const f=focusId?units.find(u
 if(VIEW){restoring=true;applyCSV(VIEW_CSV,true);let me=null;try{me=new URLSearchParams(location.search).get('me')||localStorage.getItem(LSKEY+'_viewme');}catch(e){}
   if(me){const f=units.find(u=>uname(u)===me);if(f){focusId=f.id;selId=f.id;}}
   document.body.classList.add('view');document.title='手取川 布陣マップ（閲覧用）';
+  if(innerWidth<=760)$('panel').classList.add('collapsed');
   $('hsub').innerHTML='<span class="vbadge">閲覧用・編集不可</span>';
   $('hint').innerHTML='ピンチ／ホイールで拡大、▶で移動を再生。<b>右下で自分の名前を選ぶと自分のコマだけ表示</b>されます。';}
 else try{const sv=JSON.parse(localStorage.getItem(LSKEY)||'null');if(sv&&sv.csv){restoring=true;applyCSV(sv.csv,true);if(sv.focus){const f=units.find(u=>uname(u)===sv.focus);if(f){focusId=f.id;selId=f.id;}}}}catch(e){}
